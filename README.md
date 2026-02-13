@@ -33,7 +33,12 @@ Add to your `subprojects/crprintf.wrap`:
 ```ini
 [wrap-git]
 url = https://github.com/themackabu/crprintf.git
-revision = master
+revision = head
+patch_directory = crprintf
+depth = 1
+
+[provide]
+crprintf = crprintf_dep
 ```
 
 Then in your `meson.build`:
