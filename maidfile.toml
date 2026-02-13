@@ -1,0 +1,15 @@
+[tasks.build]
+path = "build"
+script = "meson compile"
+
+[tasks.clean]
+script = "rm -rf build"
+
+[tasks.setup]
+script = "meson setup build --wipe -Dtests=true -Dexamples=true"
+
+[tasks.test]
+script = ["maid build -q", "./build/test_crprintf"]
+
+[tasks.example]
+script = ["maid build -q", "./build/example_basic"]
