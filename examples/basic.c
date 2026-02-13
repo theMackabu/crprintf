@@ -30,7 +30,7 @@ int main(void) {
   crprintf("<bg_#ff00ff>Magenta background</bg_#ff00ff>\n");
   
   // variables
-  crprintf_var("error_style", "bold_red");
+  crprintf_var("error_style", "bold+red");
   crprintf_var("info_style", "cyan");
   
   // padding
