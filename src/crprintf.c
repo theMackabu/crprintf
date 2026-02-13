@@ -22,7 +22,6 @@
  * SOFTWARE.
  */
 
-
 #include <ctype.h>
 #include <stdio.h>
 #include <stdarg.h>
