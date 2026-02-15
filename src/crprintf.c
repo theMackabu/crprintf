@@ -99,6 +99,13 @@ typedef enum {
 #define PACK_RGB(r,g,b) \
   (((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))
 
+#define STYLE_BOLD   0x01
+#define STYLE_DIM    0x02
+#define STYLE_UL     0x04
+#define STYLE_ITALIC 0x08
+#define STYLE_STRIKE 0x10
+#define STYLE_INVERT 0x20
+
 typedef struct {
   size_t mark;
   int width;
@@ -108,16 +115,9 @@ typedef struct {
 typedef struct {
   uint32_t fg;
   uint32_t bg;
-  
   uint32_t fg_rgb;
   uint32_t bg_rgb;
-  
-  bool bold;
-  bool dim;
-  bool ul;
-  bool italic;
-  bool strike;
-  bool invert;
+  uint8_t flags;
 } style_entry_t;
   
 typedef struct {
@@ -918,32 +918,38 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
   }
   
   op_set_bold: { 
-    regs.current.bold = ip->operand;
+    if (ip->operand) regs.current.flags |= STYLE_BOLD;
+    else regs.current.flags &= ~STYLE_BOLD;
     NEXT(); 
   }
   
   op_set_dim: { 
-    regs.current.dim = ip->operand;
+    if (ip->operand) regs.current.flags |= STYLE_DIM;
+    else regs.current.flags &= ~STYLE_DIM;
     NEXT(); 
   }
   
   op_set_ul: {
-    regs.current.ul = ip->operand;
+    if (ip->operand) regs.current.flags |= STYLE_UL;
+    else regs.current.flags &= ~STYLE_UL;
     NEXT();
   }
 
   op_set_italic: {
-    regs.current.italic = ip->operand;
+    if (ip->operand) regs.current.flags |= STYLE_ITALIC;
+    else regs.current.flags &= ~STYLE_ITALIC;
     NEXT();
   }
 
   op_set_strike: {
-    regs.current.strike = ip->operand;
+    if (ip->operand) regs.current.flags |= STYLE_STRIKE;
+    else regs.current.flags &= ~STYLE_STRIKE;
     NEXT();
   }
 
   op_set_invert: {
-    regs.current.invert = ip->operand;
+    if (ip->operand) regs.current.flags |= STYLE_INVERT;
+    else regs.current.flags &= ~STYLE_INVERT;
     NEXT();
   }
   
@@ -1017,12 +1023,12 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
     if (!crprintf_no_color) {
       char esc[128];
       int n = snprintf(esc, sizeof(esc), "\x1b[0m");
-      if (regs.current.bold)   n += snprintf(esc+n, sizeof(esc)-n, "\x1b[1m");
-      if (regs.current.dim)    n += snprintf(esc+n, sizeof(esc)-n, "\x1b[2m");
-      if (regs.current.ul)     n += snprintf(esc+n, sizeof(esc)-n, "\x1b[4m");
-      if (regs.current.italic) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[3m");
-      if (regs.current.strike) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[9m");
-      if (regs.current.invert) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[7m");
+      if (regs.current.flags & STYLE_BOLD)   n += snprintf(esc+n, sizeof(esc)-n, "\x1b[1m");
+      if (regs.current.flags & STYLE_DIM)    n += snprintf(esc+n, sizeof(esc)-n, "\x1b[2m");
+      if (regs.current.flags & STYLE_UL)     n += snprintf(esc+n, sizeof(esc)-n, "\x1b[4m");
+      if (regs.current.flags & STYLE_ITALIC) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[3m");
+      if (regs.current.flags & STYLE_STRIKE) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[9m");
+      if (regs.current.flags & STYLE_INVERT) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[7m");
       if (regs.current.fg == COL_RGB)
         n += snprintf(esc+n, sizeof(esc)-n, "\x1b[38;2;%d;%d;%dm",
           UNPACK_R(regs.current.fg_rgb), UNPACK_G(regs.current.fg_rgb), UNPACK_B(regs.current.fg_rgb));
@@ -1040,10 +1046,7 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
   }
   
   op_style_reset_all: {
-    regs.current.fg = COL_NONE; regs.current.bg = COL_NONE;
-    regs.current.fg_rgb = 0; regs.current.bg_rgb = 0;
-    regs.current.bold = 0; regs.current.dim = 0; regs.current.ul = 0;
-    regs.current.italic = 0; regs.current.strike = 0; regs.current.invert = 0;
+    regs.current = (style_entry_t){.fg = COL_NONE, .bg = COL_NONE};
     regs.style_depth = 0;
     if (!crprintf_no_color) { OUT_CSTR("\x1b[0m"); }
     NEXT();
@@ -1053,12 +1056,12 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
     if (!crprintf_no_color) {
       char esc[128];
       int n = snprintf(esc, sizeof(esc), "\x1b[0m");
-      if (regs.current.bold)   n += snprintf(esc+n, sizeof(esc)-n, "\x1b[1m");
-      if (regs.current.dim)    n += snprintf(esc+n, sizeof(esc)-n, "\x1b[2m");
-      if (regs.current.ul)     n += snprintf(esc+n, sizeof(esc)-n, "\x1b[4m");
-      if (regs.current.italic) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[3m");
-      if (regs.current.strike) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[9m");
-      if (regs.current.invert) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[7m");
+      if (regs.current.flags & STYLE_BOLD)   n += snprintf(esc+n, sizeof(esc)-n, "\x1b[1m");
+      if (regs.current.flags & STYLE_DIM)    n += snprintf(esc+n, sizeof(esc)-n, "\x1b[2m");
+      if (regs.current.flags & STYLE_UL)     n += snprintf(esc+n, sizeof(esc)-n, "\x1b[4m");
+      if (regs.current.flags & STYLE_ITALIC) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[3m");
+      if (regs.current.flags & STYLE_STRIKE) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[9m");
+      if (regs.current.flags & STYLE_INVERT) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[7m");
       if (regs.current.fg == COL_RGB)
         n += snprintf(esc+n, sizeof(esc)-n, "\x1b[38;2;%d;%d;%dm",
           UNPACK_R(regs.current.fg_rgb), UNPACK_G(regs.current.fg_rgb), UNPACK_B(regs.current.fg_rgb));
