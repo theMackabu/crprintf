@@ -44,11 +44,14 @@ bool crprintf_get_debug(void) { return crprintf_debug; }
 void crprintf_set_debug_hex(bool enable) { crprintf_debug_hex = enable; }
 bool crprintf_get_debug_hex(void) { return crprintf_debug_hex; }
 
-static int hex_digit(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
+static inline int hex_digit(char c) {
+  static const int8_t lookup[256] = {
+    ['0']=0, ['1']=1, ['2']=2, ['3']=3, ['4']=4, ['5']=5, ['6']=6, ['7']=7, ['8']=8, ['9']=9,
+    ['a']=10, ['b']=11, ['c']=12, ['d']=13, ['e']=14, ['f']=15,
+    ['A']=10, ['B']=11, ['C']=12, ['D']=13, ['E']=14, ['F']=15,
+  };
+  int8_t val = lookup[(unsigned char)c];
+  return val ? val : (c == '0' ? 0 : -1);
 }
 
 typedef enum {
@@ -167,23 +170,30 @@ static program_t *program_new(void) {
   return p;
 }
 
-static void emit_op(program_t *p, uint32_t op, uint32_t operand) {
-  if (p->code_len >= p->code_cap) {
-    p->code_cap *= 2;
-    p->code = realloc(p->code, p->code_cap * sizeof(instruction_t));
+static inline void emit_op(program_t *p, uint32_t op, uint32_t operand) {
+  if (__builtin_expect(p->code_len >= p->code_cap, 0)) {
+    size_t new_cap = p->code_cap * 2;
+    instruction_t *new_code = realloc(p->code, new_cap * sizeof(instruction_t));
+    if (!new_code) return;
+    p->code = new_code;
+    p->code_cap = new_cap;
   }
   p->code[p->code_len++] = (instruction_t){ op, operand };
 }
 
 static uint32_t add_literal(program_t *p, const char *s, size_t len) {
-  while (p->lit_len + len + 1 > p->lit_cap) {
-    p->lit_cap *= 2;
-    p->literals = realloc(p->literals, p->lit_cap);
+  size_t required = p->lit_len + len + 1;
+  if (__builtin_expect(required > p->lit_cap, 0)) {
+    size_t new_cap = p->lit_cap;
+    while (new_cap < required) new_cap *= 2;
+    char *new_literals = realloc(p->literals, new_cap);
+    if (!new_literals) return 0;
+    p->literals = new_literals;
+    p->lit_cap = new_cap;
   }
   
   uint32_t off = (uint32_t)p->lit_len;
   memcpy(p->literals + p->lit_len, s, len);
-  
   p->literals[p->lit_len + len] = '\0';
   p->lit_len += len + 1;
   
@@ -223,18 +233,18 @@ static const color_entry_t seg_bg_colors[] = {
 #define BG_COUNT (sizeof(bg_colors)/sizeof(bg_colors[0]))
 #define SEG_BG_COUNT (sizeof(seg_bg_colors)/sizeof(seg_bg_colors[0]))
 
-static int parse_hex_rgb(const char *hex, int len, uint32_t *rgb) {
+static inline int parse_hex_rgb(const char *hex, int len, uint32_t *rgb) {
   int r, g, b;
   if (len == 4) {
     int r1=hex_digit(hex[1]), g1=hex_digit(hex[2]), b1=hex_digit(hex[3]);
-    if (r1<0||g1<0||b1<0) return 0;
+    if ((r1|g1|b1) < 0) return 0;
     r=r1*17; g=g1*17; b=b1*17;
   } else if (len == 7) {
     int r1=hex_digit(hex[1]),r2=hex_digit(hex[2]);
     int g1=hex_digit(hex[3]),g2=hex_digit(hex[4]);
     int b1=hex_digit(hex[5]),b2=hex_digit(hex[6]);
-    if (r1<0||r2<0||g1<0||g2<0||b1<0||b2<0) return 0;
-    r=r1*16+r2; g=g1*16+g2; b=b1*16+b2;
+    if (((r1|r2|g1|g2|b1|b2) < 0)) return 0;
+    r=(r1<<4)+r2; g=(g1<<4)+g2; b=(b1<<4)+b2;
   } else return 0;
   *rgb = PACK_RGB(r, g, b);
   return 1;
