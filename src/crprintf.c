@@ -62,6 +62,9 @@ typedef enum {
   OP_SET_BOLD,
   OP_SET_DIM,
   OP_SET_UL,
+  OP_SET_ITALIC,
+  OP_SET_STRIKE,
+  OP_SET_INVERT,
   OP_STYLE_PUSH,
   OP_STYLE_FLUSH,
   OP_STYLE_RESET,
@@ -105,27 +108,24 @@ typedef struct {
 typedef struct {
   uint32_t fg;
   uint32_t bg;
+  
   uint32_t fg_rgb;
   uint32_t bg_rgb;
-  int bold;
-  int dim;
-  int ul;
+  
+  bool bold;
+  bool dim;
+  bool ul;
+  bool italic;
+  bool strike;
+  bool invert;
 } style_entry_t;
   
 typedef struct {
-  uint32_t fg;
-  uint32_t bg;
-  uint32_t fg_rgb;
-  uint32_t bg_rgb;
-
-  int bold;
-  int dim;
-  int ul;
-
+  style_entry_t current;
   style_entry_t style_stack[8];
-  int style_depth;
-
   pad_entry_t pad_stack[8];
+  
+  int style_depth;
   int pad_depth;
 } vm_regs_t;
 
@@ -295,9 +295,13 @@ typedef struct {
 } attr_entry_t;
 
 static const attr_entry_t attrs[] = {
-  { "bold", 4, OP_SET_BOLD },
-  { "dim",  3, OP_SET_DIM  },
-  { "ul",   2, OP_SET_UL   },
+  { "bold", 4,   OP_SET_BOLD   },
+  { "dim",  3,   OP_SET_DIM    },
+  { "ul",   2,   OP_SET_UL     },
+  { "i",    1,   OP_SET_ITALIC },
+  { "italic", 6, OP_SET_ITALIC },
+  { "strike", 6, OP_SET_STRIKE },
+  { "invert", 6, OP_SET_INVERT },
 };
 
 #define ATTR_COUNT (sizeof(attrs) / sizeof(attrs[0]))
@@ -836,6 +840,9 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
     [OP_SET_BOLD]        = &&op_set_bold,
     [OP_SET_DIM]         = &&op_set_dim,
     [OP_SET_UL]          = &&op_set_ul,
+    [OP_SET_ITALIC]      = &&op_set_italic,
+    [OP_SET_STRIKE]      = &&op_set_strike,
+    [OP_SET_INVERT]      = &&op_set_invert,
     [OP_STYLE_PUSH]      = &&op_style_push,
     [OP_STYLE_FLUSH]     = &&op_style_flush,
     [OP_STYLE_RESET]     = &&op_style_reset,
@@ -901,46 +908,59 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
   }
 
   op_set_fg: { 
-    regs.fg = ip->operand;
+    regs.current.fg = ip->operand;
     NEXT(); 
   }
   
   op_set_bg: { 
-    regs.bg = ip->operand;
+    regs.current.bg = ip->operand;
     NEXT(); 
   }
   
   op_set_bold: { 
-    regs.bold = ip->operand;
+    regs.current.bold = ip->operand;
     NEXT(); 
   }
   
   op_set_dim: { 
-    regs.dim = ip->operand;
+    regs.current.dim = ip->operand;
     NEXT(); 
   }
   
-  op_set_ul: { 
-    regs.ul = ip->operand;
-    NEXT(); 
+  op_set_ul: {
+    regs.current.ul = ip->operand;
+    NEXT();
+  }
+
+  op_set_italic: {
+    regs.current.italic = ip->operand;
+    NEXT();
+  }
+
+  op_set_strike: {
+    regs.current.strike = ip->operand;
+    NEXT();
+  }
+
+  op_set_invert: {
+    regs.current.invert = ip->operand;
+    NEXT();
   }
   
   op_set_fg_rgb: { 
-    regs.fg = COL_RGB;
-    regs.fg_rgb = ip->operand; 
+    regs.current.fg = COL_RGB;
+    regs.current.fg_rgb = ip->operand; 
     NEXT(); 
   }
   
   op_set_bg_rgb: { 
-    regs.bg = COL_RGB;
-    regs.bg_rgb = ip->operand;
+    regs.current.bg = COL_RGB;
+    regs.current.bg_rgb = ip->operand;
     NEXT();
   }
   
   op_style_push: {
-    if (regs.style_depth < 8) regs.style_stack[regs.style_depth++] = (style_entry_t){
-      regs.fg, regs.bg, regs.fg_rgb, regs.bg_rgb, regs.bold, regs.dim, regs.ul,
-    };
+    if (regs.style_depth < 8) regs.style_stack[regs.style_depth++] = regs.current;
     NEXT();
   }
   
@@ -991,33 +1011,28 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
   }
 
   op_style_reset: {
-    if (regs.style_depth > 0) {
-      style_entry_t se = regs.style_stack[--regs.style_depth];
-      regs.fg = se.fg; regs.bg = se.bg;
-      regs.fg_rgb = se.fg_rgb; regs.bg_rgb = se.bg_rgb;
-      regs.bold = se.bold; regs.dim = se.dim; regs.ul = se.ul;
-    } else {
-      regs.fg = COL_NONE; regs.bg = COL_NONE;
-      regs.fg_rgb = 0; regs.bg_rgb = 0;
-      regs.bold = 0; regs.dim = 0; regs.ul = 0;
-    }
-    
+    if (regs.style_depth > 0) regs.current = regs.style_stack[--regs.style_depth];
+    else regs.current = (style_entry_t){.fg = COL_NONE, .bg = COL_NONE};
+
     if (!crprintf_no_color) {
       char esc[128];
       int n = snprintf(esc, sizeof(esc), "\x1b[0m");
-      if (regs.bold) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[1m");
-      if (regs.dim)  n += snprintf(esc+n, sizeof(esc)-n, "\x1b[2m");
-      if (regs.ul)   n += snprintf(esc+n, sizeof(esc)-n, "\x1b[4m");
-      if (regs.fg == COL_RGB)
+      if (regs.current.bold)   n += snprintf(esc+n, sizeof(esc)-n, "\x1b[1m");
+      if (regs.current.dim)    n += snprintf(esc+n, sizeof(esc)-n, "\x1b[2m");
+      if (regs.current.ul)     n += snprintf(esc+n, sizeof(esc)-n, "\x1b[4m");
+      if (regs.current.italic) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[3m");
+      if (regs.current.strike) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[9m");
+      if (regs.current.invert) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[7m");
+      if (regs.current.fg == COL_RGB)
         n += snprintf(esc+n, sizeof(esc)-n, "\x1b[38;2;%d;%d;%dm",
-          UNPACK_R(regs.fg_rgb), UNPACK_G(regs.fg_rgb), UNPACK_B(regs.fg_rgb));
-      else if (regs.fg)
-        n += snprintf(esc+n, sizeof(esc)-n, "\x1b[%dm", regs.fg);
-      if (regs.bg == COL_RGB)
+          UNPACK_R(regs.current.fg_rgb), UNPACK_G(regs.current.fg_rgb), UNPACK_B(regs.current.fg_rgb));
+      else if (regs.current.fg)
+        n += snprintf(esc+n, sizeof(esc)-n, "\x1b[%dm", regs.current.fg);
+      if (regs.current.bg == COL_RGB)
         n += snprintf(esc+n, sizeof(esc)-n, "\x1b[48;2;%d;%d;%dm",
-          UNPACK_R(regs.bg_rgb), UNPACK_G(regs.bg_rgb), UNPACK_B(regs.bg_rgb));
-      else if (regs.bg)
-        n += snprintf(esc+n, sizeof(esc)-n, "\x1b[%dm", regs.bg + 10);
+          UNPACK_R(regs.current.bg_rgb), UNPACK_G(regs.current.bg_rgb), UNPACK_B(regs.current.bg_rgb));
+      else if (regs.current.bg)
+        n += snprintf(esc+n, sizeof(esc)-n, "\x1b[%dm", regs.current.bg + 10);
       OUT_STR(esc, (size_t)n);
     }
     
@@ -1025,9 +1040,10 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
   }
   
   op_style_reset_all: {
-    regs.fg = COL_NONE; regs.bg = COL_NONE;
-    regs.fg_rgb = 0; regs.bg_rgb = 0;
-    regs.bold = 0; regs.dim = 0; regs.ul = 0;
+    regs.current.fg = COL_NONE; regs.current.bg = COL_NONE;
+    regs.current.fg_rgb = 0; regs.current.bg_rgb = 0;
+    regs.current.bold = 0; regs.current.dim = 0; regs.current.ul = 0;
+    regs.current.italic = 0; regs.current.strike = 0; regs.current.invert = 0;
     regs.style_depth = 0;
     if (!crprintf_no_color) { OUT_CSTR("\x1b[0m"); }
     NEXT();
@@ -1037,19 +1053,22 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
     if (!crprintf_no_color) {
       char esc[128];
       int n = snprintf(esc, sizeof(esc), "\x1b[0m");
-      if (regs.bold) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[1m");
-      if (regs.dim)  n += snprintf(esc+n, sizeof(esc)-n, "\x1b[2m");
-      if (regs.ul)   n += snprintf(esc+n, sizeof(esc)-n, "\x1b[4m");
-      if (regs.fg == COL_RGB)
+      if (regs.current.bold)   n += snprintf(esc+n, sizeof(esc)-n, "\x1b[1m");
+      if (regs.current.dim)    n += snprintf(esc+n, sizeof(esc)-n, "\x1b[2m");
+      if (regs.current.ul)     n += snprintf(esc+n, sizeof(esc)-n, "\x1b[4m");
+      if (regs.current.italic) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[3m");
+      if (regs.current.strike) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[9m");
+      if (regs.current.invert) n += snprintf(esc+n, sizeof(esc)-n, "\x1b[7m");
+      if (regs.current.fg == COL_RGB)
         n += snprintf(esc+n, sizeof(esc)-n, "\x1b[38;2;%d;%d;%dm",
-          UNPACK_R(regs.fg_rgb), UNPACK_G(regs.fg_rgb), UNPACK_B(regs.fg_rgb));
-      else if (regs.fg)
-        n += snprintf(esc+n, sizeof(esc)-n, "\x1b[%dm", regs.fg);
-      if (regs.bg == COL_RGB)
+          UNPACK_R(regs.current.fg_rgb), UNPACK_G(regs.current.fg_rgb), UNPACK_B(regs.current.fg_rgb));
+      else if (regs.current.fg)
+        n += snprintf(esc+n, sizeof(esc)-n, "\x1b[%dm", regs.current.fg);
+      if (regs.current.bg == COL_RGB)
         n += snprintf(esc+n, sizeof(esc)-n, "\x1b[48;2;%d;%d;%dm",
-          UNPACK_R(regs.bg_rgb), UNPACK_G(regs.bg_rgb), UNPACK_B(regs.bg_rgb));
-      else if (regs.bg)
-        n += snprintf(esc+n, sizeof(esc)-n, "\x1b[%dm", regs.bg + 10);
+          UNPACK_R(regs.current.bg_rgb), UNPACK_G(regs.current.bg_rgb), UNPACK_B(regs.current.bg_rgb));
+      else if (regs.current.bg)
+        n += snprintf(esc+n, sizeof(esc)-n, "\x1b[%dm", regs.current.bg + 10);
       OUT_STR(esc, (size_t)n);
     }
     NEXT();
@@ -1100,6 +1119,9 @@ static const char *op_names[OP_MAX] = {
   [OP_SET_BOLD]        = "SET_BOLD",
   [OP_SET_DIM]         = "SET_DIM",
   [OP_SET_UL]          = "SET_UL",
+  [OP_SET_ITALIC]      = "SET_ITALIC",
+  [OP_SET_STRIKE]      = "SET_STRIKE",
+  [OP_SET_INVERT]      = "SET_INVERT",
   [OP_STYLE_PUSH]      = "STYLE_PUSH",
   [OP_STYLE_FLUSH]     = "STYLE_FLUSH",
   [OP_STYLE_RESET]     = "STYLE_RESET",
@@ -1198,6 +1220,9 @@ static void fprint_operand(FILE *out, program_t *prog, instruction_t *ins, bool 
     case OP_SET_BOLD:
     case OP_SET_DIM:
     case OP_SET_UL:
+    case OP_SET_ITALIC:
+    case OP_SET_STRIKE:
+    case OP_SET_INVERT:
       fprintf(out, "%s", ins->operand ? "ON" : "OFF");
       break;
 

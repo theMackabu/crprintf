@@ -105,6 +105,14 @@ TEST(escapes) {
   ASSERT_STR_EQ(buf, "< > %");
 }
 
+TEST(extra_styles) {
+  char buf[256];
+  crprintf_set_color(false);
+  crsprintf(buf, sizeof(buf), "<i>italic</i> <italic>italic</italic> <strike>strike</strike> <invert>invert</invert>");
+  ASSERT_STR_EQ(buf, "italic italic strike invert");
+  crprintf_set_color(true);
+}
+
 TEST(reset) {
   char buf[256];
   crprintf_set_color(false);
@@ -142,6 +150,7 @@ int main(void) {
   RUN_TEST(newlines);
   RUN_TEST(spaces);
   RUN_TEST(escapes);
+  RUN_TEST(extra_styles);
   RUN_TEST(reset);
   RUN_TEST(variables);
   RUN_TEST(buffer_overflow);

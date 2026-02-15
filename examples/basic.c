@@ -19,10 +19,11 @@ int main(void) {
   // styles
   crprintf("<bold>Bold text</bold> and <dim>dim text</dim>\n");
   crprintf("<ul>Underlined</ul> text\n");
+  crprintf("<i>Italic</i> or <italic>italic</italic>, <strike>strikethrough</strike>, <invert>inverted</invert>\n");
   
   // combined styles
   crprintf("<bold_red>Bold red</bold_red> or <bold+blue>bold blue</bold+blue>\n");
-  crprintf("<dim_cyan>Dim cyan</dim_cyan>\n");
+  crprintf("<dim_cyan>Dim cyan</dim_cyan> and <i+bright_green>italic green</i+bright_green>\n");
   
   // hex colors
   crprintf("<#ff8800>Orange hex color</#ff8800>\n");
