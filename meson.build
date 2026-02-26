@@ -1,5 +1,5 @@
 project('crprintf', 'c',
-  version: '0.0.4',
+  version: '0.0.5',
   license: 'MIT',
   default_options: ['warning_level=2']
 )
