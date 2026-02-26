@@ -12,4 +12,4 @@ script = "meson setup build --wipe -Dtests=true -Dexamples=true"
 script = ["maid build -q", "./build/test_crprintf"]
 
 [tasks.example]
-script = ["maid build -q", "./build/example_basic"]
+script = ["maid build -q", "./build/example_%{arg.1}"]

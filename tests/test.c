@@ -139,6 +139,196 @@ TEST(buffer_overflow) {
   ASSERT_EQ(buf[5], ' ');
 }
 
+TEST(state_new_is_clean) {
+  crprintf_state *s = crprintf_state_new();
+  crprintf_state *empty = crprintf_state_new();
+  ASSERT_EQ(crprintf_state_eq(s, empty), true);
+  crprintf_state_free(s);
+  crprintf_state_free(empty);
+}
+
+TEST(stateful_matches_non_stateful) {
+  char buf_normal[256], buf_stateful[256];
+  crprintf_set_color(false);
+  crprintf_state *state = crprintf_state_new();
+
+  crsprintf(buf_normal, sizeof(buf_normal), "<red>hello</red> world");
+  crsprintf_stateful(buf_stateful, sizeof(buf_stateful), state, "<red>hello</red> world");
+
+  ASSERT_STR_EQ(buf_stateful, buf_normal);
+  crprintf_state_free(state);
+  crprintf_set_color(true);
+}
+
+TEST(state_carryover_unclosed_tag) {
+  char buf1[256], buf2[256];
+  crprintf_set_color(false);
+  crprintf_state *state = crprintf_state_new();
+
+  crsprintf_stateful(buf1, sizeof(buf1), state, "<green>hello");
+  ASSERT_STR_EQ(buf1, "hello");
+
+  crsprintf_stateful(buf2, sizeof(buf2), state, " world</>");
+  ASSERT_STR_EQ(buf2, " world");
+
+  crprintf_state_free(state);
+  crprintf_set_color(true);
+}
+
+TEST(state_carryover_nested_tags) {
+  crprintf_set_color(false);
+  crprintf_state *state = crprintf_state_new();
+  char buf[256];
+
+  crsprintf_stateful(buf, sizeof(buf), state, "<bold><red>text");
+  ASSERT_STR_EQ(buf, "text");
+
+  crprintf_state *before = crprintf_state_clone(state);
+  crsprintf_stateful(buf, sizeof(buf), state, "</>");
+  ASSERT_STR_EQ(buf, "");
+
+  ASSERT_EQ(crprintf_state_eq(state, before), false);
+  crsprintf_stateful(buf, sizeof(buf), state, "</>");
+
+  crprintf_state *empty = crprintf_state_new();
+  ASSERT_EQ(crprintf_state_eq(state, empty), true);
+
+  crprintf_state_free(state);
+  crprintf_state_free(before);
+  crprintf_state_free(empty);
+  crprintf_set_color(true);
+}
+
+TEST(state_reset_clears) {
+  crprintf_set_color(false);
+  crprintf_state *state = crprintf_state_new();
+  char buf[256];
+
+  crsprintf_stateful(buf, sizeof(buf), state, "<bold><red>styled");
+  crsprintf_stateful(buf, sizeof(buf), state, "<reset/>clean");
+  ASSERT_STR_EQ(buf, "clean");
+
+  crprintf_state *empty = crprintf_state_new();
+  ASSERT_EQ(crprintf_state_eq(state, empty), true);
+
+  crprintf_state_free(state);
+  crprintf_state_free(empty);
+  crprintf_set_color(true);
+}
+
+TEST(state_clone_independent) {
+  crprintf_set_color(false);
+  crprintf_state *state = crprintf_state_new();
+  char buf[256];
+
+  crsprintf_stateful(buf, sizeof(buf), state, "<green>open");
+  crprintf_state *cloned = crprintf_state_clone(state);
+
+  crsprintf_stateful(buf, sizeof(buf), state, "<bold>more");
+  ASSERT_EQ(crprintf_state_eq(state, cloned), false);
+
+  crprintf_state_free(state);
+  crprintf_state_free(cloned);
+  crprintf_set_color(true);
+}
+
+TEST(state_eq_null_handling) {
+  ASSERT_EQ(crprintf_state_eq(NULL, NULL), true);
+
+  crprintf_state *s = crprintf_state_new();
+  ASSERT_EQ(crprintf_state_eq(s, NULL), false);
+  ASSERT_EQ(crprintf_state_eq(NULL, s), false);
+  crprintf_state_free(s);
+}
+
+TEST(compiled_basic) {
+  char buf[256];
+  crprintf_set_color(false);
+
+  crprintf_compiled *prog = crprintf_compile("hello %s");
+  crsprintf_compiled(buf, sizeof(buf), NULL, prog, "world");
+  ASSERT_STR_EQ(buf, "hello world");
+
+  crprintf_compiled_free(prog);
+  crprintf_set_color(true);
+}
+
+TEST(recompile_identity) {
+  const char *fmt = "<red>hello</red> world";
+  crprintf_compiled *prog = crprintf_recompile(NULL, fmt);
+  crprintf_compiled *same = crprintf_recompile(prog, fmt);
+
+  ASSERT_EQ(prog == same, true);
+  crprintf_compiled_free(same);
+}
+
+TEST(recompile_tail_edit) {
+  char buf[256];
+  crprintf_set_color(false);
+
+  crprintf_compiled *prog = crprintf_recompile(NULL, "<red>hello</red> world");
+  crsprintf_compiled(buf, sizeof(buf), NULL, prog);
+  ASSERT_STR_EQ(buf, "hello world");
+
+  prog = crprintf_recompile(prog, "<red>hello</red> world!");
+  crsprintf_compiled(buf, sizeof(buf), NULL, prog);
+  ASSERT_STR_EQ(buf, "hello world!");
+
+  crprintf_compiled_free(prog);
+  crprintf_set_color(true);
+}
+
+TEST(recompile_middle_edit) {
+  char buf[256];
+  crprintf_set_color(false);
+
+  crprintf_compiled *prog = crprintf_recompile(NULL, "<red>hello</red> <blue>world</blue>");
+  crsprintf_compiled(buf, sizeof(buf), NULL, prog);
+  ASSERT_STR_EQ(buf, "hello world");
+
+  prog = crprintf_recompile(prog, "<red>hello</red> <blue>earth</blue>");
+  crsprintf_compiled(buf, sizeof(buf), NULL, prog);
+  ASSERT_STR_EQ(buf, "hello earth");
+
+  crprintf_compiled_free(prog);
+  crprintf_set_color(true);
+}
+
+TEST(recompile_from_null) {
+  char buf[256];
+  crprintf_set_color(false);
+
+  crprintf_compiled *prog = crprintf_recompile(NULL, "plain text");
+  crsprintf_compiled(buf, sizeof(buf), NULL, prog);
+  ASSERT_STR_EQ(buf, "plain text");
+
+  crprintf_compiled_free(prog);
+  crprintf_set_color(true);
+}
+
+TEST(compiled_with_state) {
+  char buf[256];
+  crprintf_set_color(false);
+  crprintf_state *state = crprintf_state_new();
+
+  crprintf_compiled *prog1 = crprintf_compile("<green>open");
+  crsprintf_compiled(buf, sizeof(buf), state, prog1);
+  ASSERT_STR_EQ(buf, "open");
+
+  crprintf_compiled *prog2 = crprintf_compile(" still green</>");
+  crsprintf_compiled(buf, sizeof(buf), state, prog2);
+  ASSERT_STR_EQ(buf, " still green");
+
+  crprintf_state *empty = crprintf_state_new();
+  ASSERT_EQ(crprintf_state_eq(state, empty), true);
+
+  crprintf_state_free(state);
+  crprintf_state_free(empty);
+  crprintf_compiled_free(prog1);
+  crprintf_compiled_free(prog2);
+  crprintf_set_color(true);
+}
+
 int main(void) {
   printf("=== crprintf tests ===\n\n");
   
@@ -154,6 +344,23 @@ int main(void) {
   RUN_TEST(reset);
   RUN_TEST(variables);
   RUN_TEST(buffer_overflow);
+
+  printf("\n--- stateful ---\n");
+  RUN_TEST(state_new_is_clean);
+  RUN_TEST(stateful_matches_non_stateful);
+  RUN_TEST(state_carryover_unclosed_tag);
+  RUN_TEST(state_carryover_nested_tags);
+  RUN_TEST(state_reset_clears);
+  RUN_TEST(state_clone_independent);
+  RUN_TEST(state_eq_null_handling);
+
+  printf("\n--- compiled / recompile ---\n");
+  RUN_TEST(compiled_basic);
+  RUN_TEST(recompile_identity);
+  RUN_TEST(recompile_tail_edit);
+  RUN_TEST(recompile_middle_edit);
+  RUN_TEST(recompile_from_null);
+  RUN_TEST(compiled_with_state);
   
   printf("\n=== Results: %d/%d tests passed ===\n", pass_count, test_count);
   

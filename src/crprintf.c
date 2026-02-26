@@ -154,7 +154,20 @@ typedef struct {
   char *literals;
   size_t lit_len;
   size_t lit_cap;
+  char *source;
+  size_t source_len;
+  uint32_t *src_map;
+  uint32_t *lit_marks;
+  size_t map_cap;
+  const char *compile_base;
+  uint32_t _cur_src_off;
 } program_t;
+
+typedef struct crprintf_state {
+  style_entry_t current;
+  style_entry_t style_stack[8];
+  int style_depth;
+} crprintf_state;
 
 static var_table_t global_vars = {0};
 static const char *scan_var_brace(program_t *p, const char *ptr, const char **lit, var_table_t *vars);
@@ -177,6 +190,16 @@ static inline void emit_op(program_t *p, uint32_t op, uint32_t operand) {
     if (!new_code) return;
     p->code = new_code;
     p->code_cap = new_cap;
+  }
+  if (p->src_map) {
+    if (__builtin_expect(p->code_len >= p->map_cap, 0)) {
+      size_t new_cap = p->map_cap * 2;
+      p->src_map = realloc(p->src_map, new_cap * sizeof(uint32_t));
+      p->lit_marks = realloc(p->lit_marks, new_cap * sizeof(uint32_t));
+      p->map_cap = new_cap;
+    }
+    p->src_map[p->code_len] = p->_cur_src_off;
+    p->lit_marks[p->code_len] = (uint32_t)p->lit_len;
   }
   p->code[p->code_len++] = (instruction_t){ op, operand };
 }
@@ -448,6 +471,48 @@ void crprintf_var(const char *name, const char *value) {
   v->value[vlen] = '\0'; v->vlen = vlen;
 }
 
+crprintf_state *crprintf_state_new(void) { return calloc(1, sizeof(crprintf_state)); }
+void crprintf_state_free(crprintf_state *state) { free(state); }
+
+crprintf_state *crprintf_state_clone(const crprintf_state *state) {
+  if (!state) return crprintf_state_new();
+  crprintf_state *clone = malloc(sizeof(crprintf_state));
+  if (clone) memcpy(clone, state, sizeof(crprintf_state));
+  return clone;
+}
+
+bool crprintf_state_eq(const crprintf_state *a, const crprintf_state *b) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (a->style_depth != b->style_depth) return false;
+  if (memcmp(&a->current, &b->current, sizeof(style_entry_t)) != 0) return false;
+  for (int i = 0; i < a->style_depth; i++) {
+    if (memcmp(&a->style_stack[i], &b->style_stack[i], sizeof(style_entry_t)) != 0) return false;
+  }
+  return true;
+}
+
+static int emit_style_esc(char *esc, size_t esc_size, const style_entry_t *s) {
+  int n = snprintf(esc, esc_size, "\x1b[0m");
+  if (s->flags & STYLE_BOLD)   n += snprintf(esc+n, esc_size-n, "\x1b[1m");
+  if (s->flags & STYLE_DIM)    n += snprintf(esc+n, esc_size-n, "\x1b[2m");
+  if (s->flags & STYLE_UL)     n += snprintf(esc+n, esc_size-n, "\x1b[4m");
+  if (s->flags & STYLE_ITALIC) n += snprintf(esc+n, esc_size-n, "\x1b[3m");
+  if (s->flags & STYLE_STRIKE) n += snprintf(esc+n, esc_size-n, "\x1b[9m");
+  if (s->flags & STYLE_INVERT) n += snprintf(esc+n, esc_size-n, "\x1b[7m");
+  if (s->fg == COL_RGB)
+    n += snprintf(esc+n, esc_size-n, "\x1b[38;2;%d;%d;%dm",
+      UNPACK_R(s->fg_rgb), UNPACK_G(s->fg_rgb), UNPACK_B(s->fg_rgb));
+  else if (s->fg)
+    n += snprintf(esc+n, esc_size-n, "\x1b[%dm", s->fg);
+  if (s->bg == COL_RGB)
+    n += snprintf(esc+n, esc_size-n, "\x1b[48;2;%d;%d;%dm",
+      UNPACK_R(s->bg_rgb), UNPACK_G(s->bg_rgb), UNPACK_B(s->bg_rgb));
+  else if (s->bg)
+    n += snprintf(esc+n, esc_size-n, "\x1b[%dm", s->bg + 10);
+  return n;
+}
+
 static int compile_var_ref(program_t *p, var_table_t *vars, const char *tag, int len) {
   const char *name = tag + 1;
   int nlen = len - 1;
@@ -591,8 +656,12 @@ static int compile_tag(program_t *p, const char *tag, int len, int closing, var_
 
 static void flush_lit(program_t *p, const char *lit, const char *end) {
   if (end <= lit) return;
+  uint32_t saved_off = p->_cur_src_off;
+  if (p->compile_base && lit >= p->compile_base)
+    p->_cur_src_off = (uint32_t)(lit - p->compile_base);
   uint32_t off = add_literal(p, lit, end - lit);
   emit_op(p, OP_EMIT_LIT, off);
+  p->_cur_src_off = saved_off;
 }
 
 static const char *scan_tag(program_t *p, const char *ptr, const char **lit, var_table_t *vars) {
@@ -717,6 +786,8 @@ static void compile_fragment(program_t *p, const char *fmt, var_table_t *vars) {
   const char *lit = ptr;
 
   while (*ptr) {
+    if (p->compile_base && fmt >= p->compile_base && fmt <= p->compile_base + p->source_len)
+      p->_cur_src_off = (uint32_t)(ptr - p->compile_base);
     if      (*ptr == '<' && ptr[1] == '<')                ptr = scan_escape(p, ptr, &lit, "<", 1);
     else if (*ptr == '>' && ptr[1] == '>')                ptr = scan_escape(p, ptr, &lit, ">", 1);
     else if (*ptr == '%' && ptr[1] == '%')                ptr = scan_escape(p, ptr, &lit, "%", 1);
@@ -727,6 +798,8 @@ static void compile_fragment(program_t *p, const char *fmt, var_table_t *vars) {
     else ptr++;
   }
 
+  if (p->compile_base && fmt >= p->compile_base && fmt <= p->compile_base + p->source_len)
+    p->_cur_src_off = (uint32_t)(ptr - p->compile_base);
   flush_lit(p, lit, ptr);
 }
 
@@ -778,7 +851,10 @@ static const char *scan_var_brace(program_t *p, const char *ptr, const char **li
       char tmp[MAX_VAR_VALUE + 1];
       memcpy(tmp, val, vlen);
       tmp[vlen] = '\0';
+      const char *saved_base = p->compile_base;
+      p->compile_base = NULL;
       compile_fragment(p, tmp, vars);
+      p->compile_base = saved_base;
     } else if (v->is_fmt) {
       arg_class_t cls = classify_arg(val, vlen);
       uint32_t off = add_literal(p, val, vlen);
@@ -822,8 +898,14 @@ typedef struct {
   size_t len;
 } vm_output_t;
 
-static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
+static vm_output_t crprintf_vm_run(const program_t *prog, va_list ap, crprintf_state *state) {
   vm_regs_t regs = {0};
+
+  if (state) {
+    regs.current = state->current;
+    memcpy(regs.style_stack, state->style_stack, sizeof(state->style_stack));
+    regs.style_depth = state->style_depth;
+  }
 
   size_t cap = 512, pos = 0;
   char *out = malloc(cap);
@@ -837,6 +919,15 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
   
   #define OUT_STR(s, l) ({ ENSURE(l); memcpy(out+pos, s, l); pos += (l); })
   #define OUT_CSTR(s) ({ size_t _l = strlen(s); OUT_STR(s, _l); })
+
+  if (state && !crprintf_no_color) {
+    style_entry_t *cur = &regs.current;
+    if (cur->fg || cur->bg || cur->flags) {
+      char esc[128];
+      int n = emit_style_esc(esc, sizeof(esc), cur);
+      OUT_STR(esc, (size_t)n);
+    }
+  }
 
   const instruction_t *ip = prog->code;
   static const void *dispatch[OP_MAX] = {
@@ -1088,6 +1179,11 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
   }
   
   op_halt: {
+    if (state) {
+      state->current = regs.current;
+      memcpy(state->style_stack, regs.style_stack, sizeof(state->style_stack));
+      state->style_depth = regs.style_depth;
+    }
     out[pos] = '\0';
     return (vm_output_t){ out, pos };
   }
@@ -1099,7 +1195,7 @@ static vm_output_t crprintf_vm_run(program_t *prog, va_list ap) {
 
 int crprintf_exec(program_t *prog, FILE *stream, ...) {
   va_list ap; va_start(ap, stream);
-  vm_output_t o = crprintf_vm_run(prog, ap);
+  vm_output_t o = crprintf_vm_run(prog, ap, NULL);
   va_end(ap); if (!o.data) return -1;
 
   int ret = (int)fwrite(o.data, 1, o.len, stream);
@@ -1110,7 +1206,7 @@ int crprintf_exec(program_t *prog, FILE *stream, ...) {
 
 int crsprintf_inner(program_t *prog, char *buf, size_t size, ...) {
   va_list ap; va_start(ap, size);
-  vm_output_t o = crprintf_vm_run(prog, ap);
+  vm_output_t o = crprintf_vm_run(prog, ap, NULL);
   va_end(ap); if (!o.data) return -1;
 
   size_t copy = (o.len < size) ? o.len : size - 1;
@@ -1119,6 +1215,143 @@ int crsprintf_inner(program_t *prog, char *buf, size_t size, ...) {
   free(o.data);
   
   return (int)o.len;
+}
+
+int crsprintf_stateful(char *buf, size_t size, crprintf_state *state, const char *fmt, ...) {
+  program_t *prog = crprintf_compile(fmt);
+  va_list ap; va_start(ap, fmt);
+  vm_output_t o = crprintf_vm_run(prog, ap, state);
+  va_end(ap);
+  
+  free(prog->code); free(prog->literals);
+  free(prog->source); free(prog->src_map); free(prog->lit_marks);
+  free(prog);
+  
+  if (!o.data) return -1;
+  size_t copy = (o.len < size) ? o.len : size - 1;
+  memcpy(buf, o.data, copy);
+  buf[copy] = '\0';
+  free(o.data);
+  return (int)o.len;
+}
+
+int crfprintf_stateful(FILE *stream, crprintf_state *state, const char *fmt, ...) {
+  program_t *prog = crprintf_compile(fmt);
+  va_list ap; va_start(ap, fmt);
+  vm_output_t o = crprintf_vm_run(prog, ap, state);
+  va_end(ap);
+
+  free(prog->code); free(prog->literals);
+  free(prog->source); free(prog->src_map); free(prog->lit_marks);
+  free(prog);
+
+  if (!o.data) return -1;
+  int ret = (int)fwrite(o.data, 1, o.len, stream);
+  free(o.data);
+  return ret;
+}
+
+int crsprintf_compiled(char *buf, size_t size, crprintf_state *state, const program_t *prog, ...) {
+  va_list ap; va_start(ap, prog);
+  vm_output_t o = crprintf_vm_run(prog, ap, state);
+  va_end(ap); if (!o.data) return -1;
+
+  size_t copy = (o.len < size) ? o.len : size - 1;
+  memcpy(buf, o.data, copy);
+  buf[copy] = '\0';
+  free(o.data);
+  return (int)o.len;
+}
+
+void crprintf_compiled_free(program_t *prog) {
+  if (!prog) return;
+  free(prog->code);
+  free(prog->literals);
+  free(prog->source);
+  free(prog->src_map);
+  free(prog->lit_marks);
+  free(prog);
+}
+
+static program_t *compile_tracked(const char *fmt) {
+  program_t *p = program_new();
+  p->source_len = strlen(fmt);
+  p->source = malloc(p->source_len + 1);
+  memcpy(p->source, fmt, p->source_len + 1);
+  p->map_cap = p->code_cap;
+  p->src_map = malloc(p->map_cap * sizeof(uint32_t));
+  p->lit_marks = malloc(p->map_cap * sizeof(uint32_t));
+  p->compile_base = p->source;
+
+  var_table_t vars = global_vars;
+  compile_fragment(p, p->source, &vars);
+  emit_op(p, OP_HALT, 0);
+  p->compile_base = NULL;
+  return p;
+}
+
+program_t *crprintf_recompile(program_t *prev, const char *fmt) {
+  if (!prev) return compile_tracked(fmt);
+
+  size_t new_len = strlen(fmt);
+
+  if (prev->source && prev->source_len == new_len &&
+      memcmp(prev->source, fmt, new_len) == 0) {
+    return prev;
+  }
+
+  if (!prev->src_map) {
+    crprintf_compiled_free(prev);
+    return compile_tracked(fmt);
+  }
+
+  size_t min_len = prev->source_len < new_len ? prev->source_len : new_len;
+  size_t diverge = 0;
+  while (diverge < min_len && prev->source[diverge] == fmt[diverge]) diverge++;
+
+  size_t trunc_idx = prev->code_len;
+  for (size_t i = 0; i < prev->code_len; i++) {
+    if (prev->src_map[i] >= (uint32_t)diverge) {
+      trunc_idx = i;
+      break;
+    }
+  }
+
+  uint32_t resume_off = 0;
+  if (trunc_idx > 0) {
+    uint32_t boundary_src = prev->src_map[trunc_idx - 1];
+    while (trunc_idx > 0 && prev->src_map[trunc_idx - 1] == boundary_src)
+      trunc_idx--;
+    resume_off = boundary_src;
+  }
+
+  prev->code_len = trunc_idx;
+  prev->lit_len = (trunc_idx > 0) ? prev->lit_marks[trunc_idx - 1] : 0;
+
+  free(prev->source);
+  prev->source_len = new_len;
+  prev->source = malloc(new_len + 1);
+  memcpy(prev->source, fmt, new_len + 1);
+
+  var_table_t vars = global_vars;
+  for (size_t i = 0; i + 5 < diverge; i++) {
+    if (fmt[i] == '<' && memcmp(fmt + i + 1, "let ", 4) == 0) {
+      const char *body = fmt + i + 5;
+      const char *end = memchr(body, '>', diverge - (i + 5));
+      if (end) { compile_let(&vars, body, (int)(end - body)); i = (size_t)(end - fmt); }
+    } else if (fmt[i] == '{' && memcmp(fmt + i + 1, "let ", 4) == 0) {
+      const char *body = fmt + i + 5;
+      const char *end = memchr(body, '}', diverge - (i + 5));
+      if (end) { compile_let(&vars, body, (int)(end - body)); i = (size_t)(end - fmt); }
+    }
+  }
+
+  prev->compile_base = prev->source;
+  compile_fragment(prev, prev->source + resume_off, &vars);
+  emit_op(prev, OP_HALT, 0);
+  prev->compile_base = NULL;
+
+  return prev;
 }
 
 static const char *op_names[OP_MAX] = {

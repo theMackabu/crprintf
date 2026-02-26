@@ -33,6 +33,11 @@ if get_option('examples')
     include_directories: inc,
     link_with: libcrprintf
   )
+  executable('example_stateful',
+    'examples/stateful.c',
+    include_directories: inc,
+    link_with: libcrprintf
+  )
 endif
 
 if get_option('tests')

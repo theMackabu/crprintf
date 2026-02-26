@@ -76,6 +76,22 @@ void crprintf_var(const char *name, const char *value);
 void crprintf_hexdump(struct program_t *prog, FILE *out);
 void crprintf_disasm(struct program_t *prog, FILE *out);
 
+typedef struct crprintf_state crprintf_state;
+typedef struct program_t crprintf_compiled;
+
+crprintf_state *crprintf_state_new(void);
+void crprintf_state_free(crprintf_state *state);
+
+crprintf_state *crprintf_state_clone(const crprintf_state *state);
+bool crprintf_state_eq(const crprintf_state *a, const crprintf_state *b);
+
+int crsprintf_stateful(char *buf, size_t size, crprintf_state *state, const char *fmt, ...);
+int crfprintf_stateful(FILE *stream, crprintf_state *state, const char *fmt, ...);
+
+crprintf_compiled *crprintf_recompile(crprintf_compiled *prev, const char *fmt);
+int crsprintf_compiled(char *buf, size_t size, crprintf_state *state, const crprintf_compiled *prog, ...);
+void crprintf_compiled_free(crprintf_compiled *prog);
+
 #define _CRPRINTF_INIT(prog, fmt) \
   if (!prog) { \
     prog = crprintf_compile(fmt); \
