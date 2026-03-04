@@ -1399,16 +1399,12 @@ crprintf_compiled *crprintf_recompile(crprintf_compiled *prev, const char *fmt) 
       trunc_idx--;
     resume_off = boundary_src;
 
-    if (resume_off > 0 && resume_off < new_len) {
-      uint32_t scan = resume_off;
-      while (scan > 0) {
-        char c = fmt[scan];
-        if (c == '<' || c == '{') { resume_off = scan; break; }
-        if (c == '>' || c == '}') break;
-        scan--;
-      }
-      while (trunc_idx > 0 && prev->src_map[trunc_idx - 1] >= resume_off) trunc_idx--;
+    for (uint32_t s = resume_off; s <= resume_off; s--) {
+      char c = fmt[s];
+      if (c == '<' || c == '{') { resume_off = s; break; }
+      if (c == '>' || c == '}') break;
     }
+    while (trunc_idx > 0 && prev->src_map[trunc_idx - 1] >= resume_off) trunc_idx--;
   }
 
   prev->code_len = trunc_idx;
