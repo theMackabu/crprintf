@@ -89,7 +89,7 @@ int crsprintf_stateful(char *buf, size_t size, crprintf_state *state, const char
 int crfprintf_stateful(FILE *stream, crprintf_state *state, const char *fmt, ...);
 
 crprintf_compiled *crprintf_recompile(crprintf_compiled *prev, const char *fmt);
-int crsprintf_compiled(char *buf, size_t size, crprintf_state *state, const crprintf_compiled *prog, ...);
+int crsprintf_compiled(char *buf, size_t size, crprintf_state *state, crprintf_compiled *prog, ...);
 void crprintf_compiled_free(crprintf_compiled *prog);
 
 #define _CRPRINTF_INIT(prog, fmt) \

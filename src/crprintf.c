@@ -78,6 +78,7 @@ typedef enum {
   OP_PAD_END,
   OP_EMIT_SPACES,
   OP_EMIT_NEWLINES,
+  OP_SNAPSHOT,
   OP_HALT,
   OP_MAX
 } opcode_t;
@@ -133,8 +134,8 @@ typedef struct {
   int pad_depth;
 } vm_regs_t;
 
-#define MAX_VARS 16
-#define MAX_VAR_NAME 32
+#define MAX_VARS      64
+#define MAX_VAR_NAME  32
 #define MAX_VAR_VALUE 128
 
 typedef struct {
@@ -147,6 +148,15 @@ typedef struct {
   crprintf_var_t vars[MAX_VARS];
   int count;
 } var_table_t;
+
+typedef struct {
+  vm_regs_t regs;
+  char *out_buf;
+  size_t out_pos;
+  size_t out_cap;
+  size_t resume_ip;
+  bool valid;
+} vm_checkpoint_t;
 
 struct crprintf_compiled {
   instruction_t *code;
@@ -162,6 +172,7 @@ struct crprintf_compiled {
   size_t map_cap;
   const char *compile_base;
   uint32_t _cur_src_off;
+  vm_checkpoint_t checkpoint;
 };
 
 typedef struct crprintf_state {
@@ -903,18 +914,34 @@ typedef struct {
   size_t len;
 } vm_output_t;
 
-static vm_output_t crprintf_vm_run(const crprintf_compiled *prog, va_list ap, crprintf_state *state) {
+static vm_output_t crprintf_vm_run_ex(crprintf_compiled *prog, va_list ap, crprintf_state *state, const vm_checkpoint_t *ckpt);
+
+static vm_output_t crprintf_vm_run(crprintf_compiled *prog, va_list ap, crprintf_state *state) {
+  return crprintf_vm_run_ex(prog, ap, state, NULL);
+}
+
+static vm_output_t crprintf_vm_run_ex(crprintf_compiled *prog, va_list ap, crprintf_state *state, const vm_checkpoint_t *ckpt) {
   vm_regs_t regs = {0};
+  size_t cap, pos;
+  char *out;
 
-  if (state) {
-    regs.current = state->current;
-    memcpy(regs.style_stack, state->style_stack, sizeof(state->style_stack));
-    regs.style_depth = state->style_depth;
+  if (ckpt && ckpt->valid) {
+    regs = ckpt->regs;
+    cap = ckpt->out_cap;
+    pos = ckpt->out_pos;
+    out = malloc(cap);
+    if (!out) return (vm_output_t){ NULL, 0 };
+    memcpy(out, ckpt->out_buf, pos);
+  } else {
+    if (state) {
+      regs.current = state->current;
+      memcpy(regs.style_stack, state->style_stack, sizeof(state->style_stack));
+      regs.style_depth = state->style_depth;
+    }
+    cap = 512; pos = 0;
+    out = malloc(cap);
+    if (!out) return (vm_output_t){ NULL, 0 };
   }
-
-  size_t cap = 512, pos = 0;
-  char *out = malloc(cap);
-  if (!out) return (vm_output_t){ NULL, 0 };
 
   #define ENSURE(n) ({ \
   while (pos + (n) + 1 > cap) { \
@@ -925,7 +952,7 @@ static vm_output_t crprintf_vm_run(const crprintf_compiled *prog, va_list ap, cr
   #define OUT_STR(s, l) ({ ENSURE(l); memcpy(out+pos, s, l); pos += (l); })
   #define OUT_CSTR(s) ({ size_t _l = strlen(s); OUT_STR(s, _l); })
 
-  if (state && !crprintf_no_color) {
+  if (!(ckpt && ckpt->valid) && state && !crprintf_no_color) {
     style_entry_t *cur = &regs.current;
     if (cur->fg || cur->bg || cur->flags) {
       char esc[128];
@@ -934,7 +961,7 @@ static vm_output_t crprintf_vm_run(const crprintf_compiled *prog, va_list ap, cr
     }
   }
 
-  const instruction_t *ip = prog->code;
+  const instruction_t *ip = (ckpt && ckpt->valid) ? prog->code + ckpt->resume_ip : prog->code;
   static const void *dispatch[OP_MAX] = {
     [OP_NOP]             = &&op_nop,
     [OP_EMIT_LIT]        = &&op_emit_lit,
@@ -958,6 +985,7 @@ static vm_output_t crprintf_vm_run(const crprintf_compiled *prog, va_list ap, cr
     [OP_PAD_END]         = &&op_pad_end,
     [OP_EMIT_SPACES]     = &&op_emit_spaces,
     [OP_EMIT_NEWLINES]   = &&op_emit_newlines,
+    [OP_SNAPSHOT]        = &&op_snapshot,
     [OP_HALT]            = &&op_halt,
   };
 
@@ -1183,6 +1211,21 @@ static vm_output_t crprintf_vm_run(const crprintf_compiled *prog, va_list ap, cr
     NEXT();
   }
   
+  op_snapshot: {
+    vm_checkpoint_t *save = &prog->checkpoint;
+    free(save->out_buf);
+    save->regs = regs;
+    save->out_buf = malloc(pos);
+    if (save->out_buf) {
+      memcpy(save->out_buf, out, pos);
+      save->out_pos = pos;
+      save->out_cap = pos;
+      save->resume_ip = (size_t)(ip + 1 - prog->code);
+      save->valid = true;
+    }
+    NEXT();
+  }
+
   op_halt: {
     if (state) {
       state->current = regs.current;
@@ -1260,9 +1303,10 @@ int crfprintf_stateful(FILE *stream, crprintf_state *state, const char *fmt, ...
   return ret;
 }
 
-int crsprintf_compiled(char *buf, size_t size, crprintf_state *state, const crprintf_compiled *prog, ...) {
+int crsprintf_compiled(char *buf, size_t size, crprintf_state *state, crprintf_compiled *prog, ...) {
   va_list ap; va_start(ap, prog);
-  vm_output_t o = crprintf_vm_run(prog, ap, state);
+  const vm_checkpoint_t *ckpt = prog->checkpoint.valid ? &prog->checkpoint : NULL;
+  vm_output_t o = crprintf_vm_run_ex(prog, ap, state, ckpt);
   va_end(ap); if (!o.data) return -1;
 
   size_t copy = (o.len < size) ? o.len : size - 1;
@@ -1279,6 +1323,7 @@ void crprintf_compiled_free(crprintf_compiled *prog) {
   free(prog->source);
   free(prog->src_map);
   free(prog->lit_marks);
+  free(prog->checkpoint.out_buf);
   free(prog);
 }
 
@@ -1339,6 +1384,16 @@ crprintf_compiled *crprintf_recompile(crprintf_compiled *prev, const char *fmt) 
   prev->code_len = trunc_idx;
   prev->lit_len = (trunc_idx > 0) ? prev->lit_marks[trunc_idx - 1] : 0;
 
+  if (prev->checkpoint.valid && prev->checkpoint.resume_ip != trunc_idx + 1) {
+    free(prev->checkpoint.out_buf);
+    prev->checkpoint = (vm_checkpoint_t){0};
+  }
+
+  bool prefix_has_fmt = false;
+  for (size_t i = 0; i < trunc_idx; i++) {
+    if (prev->code[i].op == OP_EMIT_FMT) { prefix_has_fmt = true; break; }
+  }
+
   free(prev->source);
   prev->source_len = new_len;
   prev->source = malloc(new_len + 1);
@@ -1356,6 +1411,8 @@ crprintf_compiled *crprintf_recompile(crprintf_compiled *prev, const char *fmt) 
       if (end) { compile_let(&vars, body, (int)(end - body)); i = (size_t)(end - fmt); }
     }
   }
+
+  if (trunc_idx > 0 && !prefix_has_fmt) emit_op(prev, OP_SNAPSHOT, 0);
 
   prev->compile_base = prev->source;
   compile_fragment(prev, prev->source + resume_off, &vars);
@@ -1390,6 +1447,7 @@ static const char *op_names[OP_MAX] = {
   [OP_PAD_END]         = "PAD_END",
   [OP_EMIT_SPACES]     = "EMIT_SPACES",
   [OP_EMIT_NEWLINES]   = "EMIT_NEWLINES",
+  [OP_SNAPSHOT]        = "SNAPSHOT",
   [OP_HALT]            = "HALT",
 };
 
@@ -1504,6 +1562,7 @@ static void fprint_operand(FILE *out, crprintf_compiled *prog, instruction_t *in
     case OP_STYLE_RESET:
     case OP_STYLE_RESET_ALL:
     case OP_PAD_END:
+    case OP_SNAPSHOT:
     case OP_HALT: break;
 
     default:
