@@ -59,6 +59,9 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+typedef struct crprintf_state crprintf_state;
+typedef struct crprintf_compiled crprintf_compiled;
+
 void crprintf_set_color(bool enable);
 bool crprintf_get_color(void);
 
@@ -68,16 +71,13 @@ bool crprintf_get_debug(void);
 void crprintf_set_debug_hex(bool enable);
 bool crprintf_get_debug_hex(void);
 
-struct program_t *crprintf_compile(const char *fmt);
-int crprintf_exec(struct program_t *prog, FILE *stream, ...);
-int crsprintf_inner(struct program_t *prog, char *buf, size_t size, ...);
+crprintf_compiled *crprintf_compile(const char *fmt);
+int crprintf_exec(struct crprintf_compiled *prog, FILE *stream, ...);
+int crsprintf_inner(struct crprintf_compiled *prog, char *buf, size_t size, ...);
 
 void crprintf_var(const char *name, const char *value);
-void crprintf_hexdump(struct program_t *prog, FILE *out);
-void crprintf_disasm(struct program_t *prog, FILE *out);
-
-typedef struct crprintf_state crprintf_state;
-typedef struct program_t crprintf_compiled;
+void crprintf_hexdump(struct crprintf_compiled *prog, FILE *out);
+void crprintf_disasm(struct crprintf_compiled *prog, FILE *out);
 
 crprintf_state *crprintf_state_new(void);
 void crprintf_state_free(crprintf_state *state);
@@ -100,19 +100,19 @@ void crprintf_compiled_free(crprintf_compiled *prog);
   }
   
 #define crprintf(fmt, ...) ({ \
-  static struct program_t *_cp_prog_ = NULL; \
+  static crprintf_compiled *_cp_prog_ = NULL; \
   _CRPRINTF_INIT(_cp_prog_, fmt); \
   crprintf_exec(_cp_prog_, stdout, ##__VA_ARGS__); \
 })
 
 #define crfprintf(stream, fmt, ...) ({ \
-  static struct program_t *_cp_prog_ = NULL; \
+  static crprintf_compiled *_cp_prog_ = NULL; \
   _CRPRINTF_INIT(_cp_prog_, fmt); \
   crprintf_exec(_cp_prog_, stream, ##__VA_ARGS__); \
 })
 
 #define crsprintf(buf, size, fmt, ...) ({ \
-  static struct program_t *_cp_prog_ = NULL; \
+  static crprintf_compiled *_cp_prog_ = NULL; \
   _CRPRINTF_INIT(_cp_prog_, fmt); \
   crsprintf_inner(_cp_prog_, buf, size, ##__VA_ARGS__); \
 })

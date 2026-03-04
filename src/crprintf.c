@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <wchar.h>
+#include "crprintf.h"
 
 static bool crprintf_no_color = false;
 static bool crprintf_debug = false;
@@ -147,7 +148,7 @@ typedef struct {
   int count;
 } var_table_t;
 
-typedef struct {
+struct crprintf_compiled {
   instruction_t *code;
   size_t code_len;
   size_t code_cap;
@@ -161,7 +162,7 @@ typedef struct {
   size_t map_cap;
   const char *compile_base;
   uint32_t _cur_src_off;
-} program_t;
+};
 
 typedef struct crprintf_state {
   style_entry_t current;
@@ -170,11 +171,15 @@ typedef struct crprintf_state {
 } crprintf_state;
 
 static var_table_t global_vars = {0};
-static const char *scan_var_brace(program_t *p, const char *ptr, const char **lit, var_table_t *vars);
 
-static program_t *program_new(void) {
-  program_t *p = calloc(1, sizeof(*p));
-  *p = (program_t){
+static const char *scan_var_brace(
+  crprintf_compiled *p, const char *ptr,
+  const char **lit, var_table_t *vars
+);
+
+static crprintf_compiled *program_new(void) {
+  crprintf_compiled *p = calloc(1, sizeof(*p));
+  *p = (crprintf_compiled){
     .code_cap = 32,
     .code = malloc(32 * sizeof(instruction_t)),
     .lit_cap = 256,
@@ -183,7 +188,7 @@ static program_t *program_new(void) {
   return p;
 }
 
-static inline void emit_op(program_t *p, uint32_t op, uint32_t operand) {
+static inline void emit_op(crprintf_compiled *p, uint32_t op, uint32_t operand) {
   if (__builtin_expect(p->code_len >= p->code_cap, 0)) {
     size_t new_cap = p->code_cap * 2;
     instruction_t *new_code = realloc(p->code, new_cap * sizeof(instruction_t));
@@ -204,7 +209,7 @@ static inline void emit_op(program_t *p, uint32_t op, uint32_t operand) {
   p->code[p->code_len++] = (instruction_t){ op, operand };
 }
 
-static uint32_t add_literal(program_t *p, const char *s, size_t len) {
+static uint32_t add_literal(crprintf_compiled *p, const char *s, size_t len) {
   size_t required = p->lit_len + len + 1;
   if (__builtin_expect(required > p->lit_cap, 0)) {
     size_t new_cap = p->lit_cap;
@@ -273,14 +278,14 @@ static inline int parse_hex_rgb(const char *hex, int len, uint32_t *rgb) {
   return 1;
 }
 
-static int compile_hex_fg(program_t *p, const char *tag, int len) {
+static int compile_hex_fg(crprintf_compiled *p, const char *tag, int len) {
   uint32_t rgb;
   if (!parse_hex_rgb(tag, len, &rgb)) return 0;
   emit_op(p, OP_SET_FG_RGB, rgb);
   return 1;
 }
 
-static int compile_hex_bg(program_t *p, const char *hex, int hlen) {
+static int compile_hex_bg(crprintf_compiled *p, const char *hex, int hlen) {
   uint32_t rgb;
   if (!parse_hex_rgb(hex, hlen, &rgb)) return 0;
   emit_op(p, OP_SET_BG_RGB, rgb);
@@ -297,7 +302,7 @@ static int tag_prefix(const char *tag, int len, const char *pfx) {
   return len > pl && memcmp(tag, pfx, pl) == 0;
 }
 
-static int match_fg(program_t *p, const char *s, int len) {
+static int match_fg(crprintf_compiled *p, const char *s, int len) {
   for (int i = 0; i < (int)FG_COUNT; i++) if (
     len == fg_colors[i].nlen && memcmp(s, fg_colors[i].name, len) == 0) {
     emit_op(p, OP_SET_FG, fg_colors[i].col); return 1;
@@ -305,7 +310,7 @@ static int match_fg(program_t *p, const char *s, int len) {
   return 0;
 }
 
-static int match_bg(program_t *p, const char *s, int len) {
+static int match_bg(crprintf_compiled *p, const char *s, int len) {
   for (int i = 0; i < (int)BG_COUNT; i++) if (
     len == bg_colors[i].nlen && memcmp(s, bg_colors[i].name, len) == 0) {
     emit_op(p, OP_SET_BG, bg_colors[i].col); return 1; 
@@ -313,7 +318,7 @@ static int match_bg(program_t *p, const char *s, int len) {
   return 0;
 }
 
-static int match_seg_bg(program_t *p, const char *s, int len) {
+static int match_seg_bg(crprintf_compiled *p, const char *s, int len) {
   for (int i = 0; i < (int)SEG_BG_COUNT; i++) if (
     len == seg_bg_colors[i].nlen && memcmp(s, seg_bg_colors[i].name, len) == 0) { 
     emit_op(p, OP_SET_BG, seg_bg_colors[i].col); return 1; 
@@ -339,7 +344,7 @@ static const attr_entry_t attrs[] = {
 
 #define ATTR_COUNT (sizeof(attrs) / sizeof(attrs[0]))
 
-static int match_attr(program_t *p, const char *s, int len) {
+static int match_attr(crprintf_compiled *p, const char *s, int len) {
   for (int i = 0; i < (int)ATTR_COUNT; i++) if (
     len == attrs[i].nlen && memcmp(s, attrs[i].name, len) == 0) { 
     emit_op(p, attrs[i].op, 1); return 1; 
@@ -354,7 +359,7 @@ static const char *next_seg(const char *cur, const char *end, int *out_len) {
   return sep;
 }
 
-static int match_plus_seg(program_t *p, const char *seg, int slen) {
+static int match_plus_seg(crprintf_compiled *p, const char *seg, int slen) {
   if (match_attr(p, seg, slen))      return 1;
   if (match_fg(p, seg, slen))        return 1;
   if (match_bg(p, seg, slen))        return 1;
@@ -364,7 +369,7 @@ static int match_plus_seg(program_t *p, const char *seg, int slen) {
   return 0;
 }
 
-static int compile_plus_segs(program_t *p, const char *s, int len) {
+static int compile_plus_segs(crprintf_compiled *p, const char *s, int len) {
   const char *seg = s;
   const char *end = s + len;
   int emitted = 0;
@@ -513,7 +518,7 @@ static int emit_style_esc(char *esc, size_t esc_size, const style_entry_t *s) {
   return n;
 }
 
-static int compile_var_ref(program_t *p, var_table_t *vars, const char *tag, int len) {
+static int compile_var_ref(crprintf_compiled *p, var_table_t *vars, const char *tag, int len) {
   const char *name = tag + 1;
   int nlen = len - 1;
 
@@ -540,7 +545,7 @@ static int compile_var_ref(program_t *p, var_table_t *vars, const char *tag, int
   return 0;
 }
 
-static int match_attr_off(program_t *p, const char *s, int len) {
+static int match_attr_off(crprintf_compiled *p, const char *s, int len) {
   for (int i = 0; i < (int)ATTR_COUNT; i++) if (
     len == attrs[i].nlen && memcmp(s, attrs[i].name, len) == 0) {
     emit_op(p, attrs[i].op, 0); return 1;
@@ -548,7 +553,7 @@ static int match_attr_off(program_t *p, const char *s, int len) {
   return 0;
 }
 
-static int match_fg_off(program_t *p, const char *s, int len) {
+static int match_fg_off(crprintf_compiled *p, const char *s, int len) {
   for (int i = 0; i < (int)FG_COUNT; i++) if (
     len == fg_colors[i].nlen && memcmp(s, fg_colors[i].name, len) == 0) {
     emit_op(p, OP_SET_FG, COL_NONE); return 1;
@@ -557,7 +562,7 @@ static int match_fg_off(program_t *p, const char *s, int len) {
   return 0;
 }
 
-static int match_bg_off(program_t *p, const char *s, int len) {
+static int match_bg_off(crprintf_compiled *p, const char *s, int len) {
   for (int i = 0; i < (int)BG_COUNT; i++) if (
     len == bg_colors[i].nlen && memcmp(s, bg_colors[i].name, len) == 0) {
     emit_op(p, OP_SET_BG, COL_NONE); return 1;
@@ -566,7 +571,7 @@ static int match_bg_off(program_t *p, const char *s, int len) {
   return 0;
 }
 
-static int compile_tag(program_t *p, const char *tag, int len, int closing, var_table_t *vars) {
+static int compile_tag(crprintf_compiled *p, const char *tag, int len, int closing, var_table_t *vars) {
   if (closing) {
     if (tag_eq(tag, len, "pad") || tag_eq(tag, len, "rpad")) { 
       emit_op(p, OP_PAD_END, 0); return 1; 
@@ -654,7 +659,7 @@ static int compile_tag(program_t *p, const char *tag, int len, int closing, var_
   return 0;
 }
 
-static void flush_lit(program_t *p, const char *lit, const char *end) {
+static void flush_lit(crprintf_compiled *p, const char *lit, const char *end) {
   if (end <= lit) return;
   uint32_t saved_off = p->_cur_src_off;
   if (p->compile_base && lit >= p->compile_base)
@@ -664,7 +669,7 @@ static void flush_lit(program_t *p, const char *lit, const char *end) {
   p->_cur_src_off = saved_off;
 }
 
-static const char *scan_tag(program_t *p, const char *ptr, const char **lit, var_table_t *vars) {
+static const char *scan_tag(crprintf_compiled *p, const char *ptr, const char **lit, var_table_t *vars) {
   flush_lit(p, *lit, ptr);
 
   const char *start = ptr + 1;
@@ -728,7 +733,7 @@ static arg_class_t classify_arg(const char *spec, int len) {
   return ARG_INT;
 }
 
-static const char *scan_fmt(program_t *p, const char *ptr, const char **lit) {
+static const char *scan_fmt(crprintf_compiled *p, const char *ptr, const char **lit) {
   flush_lit(p, *lit, ptr);
 
   const char *fs = ptr + 1;
@@ -746,7 +751,7 @@ static const char *scan_fmt(program_t *p, const char *ptr, const char **lit) {
 }
 
 static const char *scan_escape(
-  program_t *p, const char *ptr, 
+  crprintf_compiled *p, const char *ptr, 
   const char **lit, const char *emit, size_t elen
 ) {
   flush_lit(p, *lit, ptr);
@@ -763,7 +768,7 @@ static void transform_case(char *dst, const char *src, int len, int lower) {
   );
 }
 
-static const char *scan_let_brace(program_t *p, const char *ptr, const char **lit, var_table_t *vars) {
+static const char *scan_let_brace(crprintf_compiled *p, const char *ptr, const char **lit, var_table_t *vars) {
   flush_lit(p, *lit, ptr);
 
   const char *body = ptr + 5;
@@ -781,7 +786,7 @@ static const char *scan_let_brace(program_t *p, const char *ptr, const char **li
   return *lit;
 }
 
-static void compile_fragment(program_t *p, const char *fmt, var_table_t *vars) {
+static void compile_fragment(crprintf_compiled *p, const char *fmt, var_table_t *vars) {
   const char *ptr = fmt;
   const char *lit = ptr;
 
@@ -803,7 +808,7 @@ static void compile_fragment(program_t *p, const char *fmt, var_table_t *vars) {
   flush_lit(p, lit, ptr);
 }
 
-static const char *scan_var_brace(program_t *p, const char *ptr, const char **lit, var_table_t *vars) {
+static const char *scan_var_brace(crprintf_compiled *p, const char *ptr, const char **lit, var_table_t *vars) {
   flush_lit(p, *lit, ptr);
 
   const char *name = ptr + 1;
@@ -875,8 +880,8 @@ emit_brace:;
   return *lit;
 }
 
-program_t *crprintf_compile(const char *fmt) {
-  program_t *p = program_new();
+crprintf_compiled *crprintf_compile(const char *fmt) {
+  crprintf_compiled *p = program_new();
   var_table_t vars = global_vars;
 
   compile_fragment(p, fmt, &vars);
@@ -898,7 +903,7 @@ typedef struct {
   size_t len;
 } vm_output_t;
 
-static vm_output_t crprintf_vm_run(const program_t *prog, va_list ap, crprintf_state *state) {
+static vm_output_t crprintf_vm_run(const crprintf_compiled *prog, va_list ap, crprintf_state *state) {
   vm_regs_t regs = {0};
 
   if (state) {
@@ -1193,7 +1198,7 @@ static vm_output_t crprintf_vm_run(const program_t *prog, va_list ap, crprintf_s
   #undef OUT_CSTR
 }
 
-int crprintf_exec(program_t *prog, FILE *stream, ...) {
+int crprintf_exec(crprintf_compiled *prog, FILE *stream, ...) {
   va_list ap; va_start(ap, stream);
   vm_output_t o = crprintf_vm_run(prog, ap, NULL);
   va_end(ap); if (!o.data) return -1;
@@ -1204,7 +1209,7 @@ int crprintf_exec(program_t *prog, FILE *stream, ...) {
   return ret;
 }
 
-int crsprintf_inner(program_t *prog, char *buf, size_t size, ...) {
+int crsprintf_inner(crprintf_compiled *prog, char *buf, size_t size, ...) {
   va_list ap; va_start(ap, size);
   vm_output_t o = crprintf_vm_run(prog, ap, NULL);
   va_end(ap); if (!o.data) return -1;
@@ -1218,7 +1223,7 @@ int crsprintf_inner(program_t *prog, char *buf, size_t size, ...) {
 }
 
 int crsprintf_stateful(char *buf, size_t size, crprintf_state *state, const char *fmt, ...) {
-  program_t *prog = crprintf_compile(fmt);
+  crprintf_compiled *prog = crprintf_compile(fmt);
   if (__builtin_expect(crprintf_get_debug(), 0)) crprintf_disasm(prog, stderr);
   if (__builtin_expect(crprintf_get_debug_hex(), 0)) crprintf_hexdump(prog, stderr);
   va_list ap; va_start(ap, fmt);
@@ -1238,7 +1243,7 @@ int crsprintf_stateful(char *buf, size_t size, crprintf_state *state, const char
 }
 
 int crfprintf_stateful(FILE *stream, crprintf_state *state, const char *fmt, ...) {
-  program_t *prog = crprintf_compile(fmt);
+  crprintf_compiled *prog = crprintf_compile(fmt);
   if (__builtin_expect(crprintf_get_debug(), 0)) crprintf_disasm(prog, stderr);
   if (__builtin_expect(crprintf_get_debug_hex(), 0)) crprintf_hexdump(prog, stderr);
   va_list ap; va_start(ap, fmt);
@@ -1255,7 +1260,7 @@ int crfprintf_stateful(FILE *stream, crprintf_state *state, const char *fmt, ...
   return ret;
 }
 
-int crsprintf_compiled(char *buf, size_t size, crprintf_state *state, const program_t *prog, ...) {
+int crsprintf_compiled(char *buf, size_t size, crprintf_state *state, const crprintf_compiled *prog, ...) {
   va_list ap; va_start(ap, prog);
   vm_output_t o = crprintf_vm_run(prog, ap, state);
   va_end(ap); if (!o.data) return -1;
@@ -1267,7 +1272,7 @@ int crsprintf_compiled(char *buf, size_t size, crprintf_state *state, const prog
   return (int)o.len;
 }
 
-void crprintf_compiled_free(program_t *prog) {
+void crprintf_compiled_free(crprintf_compiled *prog) {
   if (!prog) return;
   free(prog->code);
   free(prog->literals);
@@ -1277,8 +1282,8 @@ void crprintf_compiled_free(program_t *prog) {
   free(prog);
 }
 
-static program_t *compile_tracked(const char *fmt) {
-  program_t *p = program_new();
+static crprintf_compiled *compile_tracked(const char *fmt) {
+  crprintf_compiled *p = program_new();
   p->source_len = strlen(fmt);
   p->source = malloc(p->source_len + 1);
   memcpy(p->source, fmt, p->source_len + 1);
@@ -1294,7 +1299,7 @@ static program_t *compile_tracked(const char *fmt) {
   return p;
 }
 
-program_t *crprintf_recompile(program_t *prev, const char *fmt) {
+crprintf_compiled *crprintf_recompile(crprintf_compiled *prev, const char *fmt) {
   if (!prev) return compile_tracked(fmt);
 
   size_t new_len = strlen(fmt);
@@ -1438,7 +1443,7 @@ static void fprint_quoted(FILE *out, const char *s, int max_chars) {
   fputc('"', out);
 }
 
-static void fprint_operand(FILE *out, program_t *prog, instruction_t *ins, bool compact) {
+static void fprint_operand(FILE *out, crprintf_compiled *prog, instruction_t *ins, bool compact) {
   switch (ins->op) {
     case OP_EMIT_LIT: {
       const char *s = prog->literals + ins->operand;
@@ -1505,7 +1510,7 @@ static void fprint_operand(FILE *out, program_t *prog, instruction_t *ins, bool 
   }
 }
 
-void crprintf_disasm(program_t *prog, FILE *out) {
+void crprintf_disasm(crprintf_compiled *prog, FILE *out) {
   fprintf(out, "; crprintf bytecode — %zu instructions, %zu bytes literal pool\n", prog->code_len, prog->lit_len);
   fprintf(out, "; %-4s  %-16s %s\n", "addr", "opcode", "operand");
   fprintf(out, "; ----  ---------------- -------\n");
@@ -1520,7 +1525,7 @@ void crprintf_disasm(program_t *prog, FILE *out) {
   }
 }
 
-void crprintf_hexdump(program_t *prog, FILE *out) {
+void crprintf_hexdump(crprintf_compiled *prog, FILE *out) {
   fprintf(out, "; crprintf hex dump — %zu instructions, %zu bytes literal pool\n", prog->code_len, prog->lit_len);
   fprintf(out, "; %-4s  %-26s %s\n", "addr", "bytes", "decoded");
   fprintf(out, "; ----  -------------------------  --------\n");
