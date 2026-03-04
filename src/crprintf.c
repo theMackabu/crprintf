@@ -150,6 +150,12 @@ typedef struct {
 } var_table_t;
 
 typedef struct {
+  const var_table_t *base;
+  var_table_t local;
+  bool has_local;
+} var_scope_t;
+
+typedef struct {
   vm_regs_t regs;
   char *out_buf;
   size_t out_pos;
@@ -183,9 +189,18 @@ typedef struct crprintf_state {
 
 static var_table_t global_vars = {0};
 
+static inline const var_table_t *scope_read(const var_scope_t *s) {
+  return s->has_local ? &s->local : s->base;
+}
+
+static inline var_table_t *scope_write(var_scope_t *s) {
+  if (!s->has_local) { s->local = *s->base; s->has_local = true; }
+  return &s->local;
+}
+
 static const char *scan_var_brace(
   crprintf_compiled *p, const char *ptr,
-  const char **lit, var_table_t *vars
+  const char **lit, var_scope_t *vars
 );
 
 static crprintf_compiled *program_new(void) {
@@ -396,7 +411,7 @@ static int compile_plus_segs(crprintf_compiled *p, const char *s, int len) {
   return emitted;
 }
 
-static int compile_let(var_table_t *vars, const char *body, int len) {
+static int compile_let(var_scope_t *scope, const char *body, int len) {
   if (len > 0 && body[len - 1] == '/') len--;
 
   const char *p = body;
@@ -427,6 +442,7 @@ static int compile_let(var_table_t *vars, const char *body, int len) {
       int vlen = (int)(vend - vstart);
       
       if (nlen <= 0 || nlen >= MAX_VAR_NAME || vlen < 0 || vlen >= MAX_VAR_VALUE) return 0;
+      var_table_t *vars = scope_write(scope);
       if (vars->count >= MAX_VARS) return 0;
 
       crprintf_var_t *v = &vars->vars[vars->count++];
@@ -451,6 +467,7 @@ static int compile_let(var_table_t *vars, const char *body, int len) {
 
     int vlen = (int)(vend - vstart);
     if (nlen <= 0 || nlen >= MAX_VAR_NAME || vlen <= 0 || vlen >= MAX_VAR_VALUE) return 0;
+    var_table_t *vars = scope_write(scope);
     if (vars->count >= MAX_VARS) return 0;
 
     crprintf_var_t *v = &vars->vars[vars->count++];
@@ -529,15 +546,16 @@ static int emit_style_esc(char *esc, size_t esc_size, const style_entry_t *s) {
   return n;
 }
 
-static int compile_var_ref(crprintf_compiled *p, var_table_t *vars, const char *tag, int len) {
+static int compile_var_ref(crprintf_compiled *p, var_scope_t *scope, const char *tag, int len) {
   const char *name = tag + 1;
   int nlen = len - 1;
 
   const char *plus = memchr(name, '+', nlen);
   int var_nlen = plus ? (int)(plus - name) : nlen;
 
+  const var_table_t *vars = scope_read(scope);
   for (int i = 0; i < vars->count; i++) {
-    crprintf_var_t *v = &vars->vars[i];
+    const crprintf_var_t *v = &vars->vars[i];
     if (var_nlen != v->nlen || memcmp(name, v->name, var_nlen) != 0) continue;
     
     emit_op(p, OP_STYLE_PUSH, 0);
@@ -582,7 +600,7 @@ static int match_bg_off(crprintf_compiled *p, const char *s, int len) {
   return 0;
 }
 
-static int compile_tag(crprintf_compiled *p, const char *tag, int len, int closing, var_table_t *vars) {
+static int compile_tag(crprintf_compiled *p, const char *tag, int len, int closing, var_scope_t *vars) {
   if (closing) {
     if (tag_eq(tag, len, "pad") || tag_eq(tag, len, "rpad")) { 
       emit_op(p, OP_PAD_END, 0); return 1; 
@@ -680,7 +698,7 @@ static void flush_lit(crprintf_compiled *p, const char *lit, const char *end) {
   p->_cur_src_off = saved_off;
 }
 
-static const char *scan_tag(crprintf_compiled *p, const char *ptr, const char **lit, var_table_t *vars) {
+static const char *scan_tag(crprintf_compiled *p, const char *ptr, const char **lit, var_scope_t *vars) {
   flush_lit(p, *lit, ptr);
 
   const char *start = ptr + 1;
@@ -779,7 +797,7 @@ static void transform_case(char *dst, const char *src, int len, int lower) {
   );
 }
 
-static const char *scan_let_brace(crprintf_compiled *p, const char *ptr, const char **lit, var_table_t *vars) {
+static const char *scan_let_brace(crprintf_compiled *p, const char *ptr, const char **lit, var_scope_t *vars) {
   flush_lit(p, *lit, ptr);
 
   const char *body = ptr + 5;
@@ -797,7 +815,7 @@ static const char *scan_let_brace(crprintf_compiled *p, const char *ptr, const c
   return *lit;
 }
 
-static void compile_fragment(crprintf_compiled *p, const char *fmt, var_table_t *vars) {
+static void compile_fragment(crprintf_compiled *p, const char *fmt, var_scope_t *vars) {
   const char *ptr = fmt;
   const char *lit = ptr;
 
@@ -819,7 +837,7 @@ static void compile_fragment(crprintf_compiled *p, const char *fmt, var_table_t 
   flush_lit(p, lit, ptr);
 }
 
-static const char *scan_var_brace(crprintf_compiled *p, const char *ptr, const char **lit, var_table_t *vars) {
+static const char *scan_var_brace(crprintf_compiled *p, const char *ptr, const char **lit, var_scope_t *vars) {
   flush_lit(p, *lit, ptr);
 
   const char *name = ptr + 1;
@@ -850,8 +868,9 @@ static const char *scan_var_brace(crprintf_compiled *p, const char *ptr, const c
     return *lit;
   }
 
-  for (int i = 0; i < vars->count; i++) {
-    crprintf_var_t *v = &vars->vars[i];
+  const var_table_t *vtbl = scope_read(vars);
+  for (int i = 0; i < vtbl->count; i++) {
+    const crprintf_var_t *v = &vtbl->vars[i];
     if (nlen != v->nlen || memcmp(name, v->name, nlen) != 0) continue;
 
     const char *val = v->value;
@@ -893,7 +912,7 @@ emit_brace:;
 
 crprintf_compiled *crprintf_compile(const char *fmt) {
   crprintf_compiled *p = program_new();
-  var_table_t vars = global_vars;
+  var_scope_t vars = { .base = &global_vars };
 
   compile_fragment(p, fmt, &vars);
   emit_op(p, OP_HALT, 0);
@@ -1337,7 +1356,7 @@ static crprintf_compiled *compile_tracked(const char *fmt) {
   p->lit_marks = malloc(p->map_cap * sizeof(uint32_t));
   p->compile_base = p->source;
 
-  var_table_t vars = global_vars;
+  var_scope_t vars = { .base = &global_vars };
   compile_fragment(p, p->source, &vars);
   emit_op(p, OP_HALT, 0);
   p->compile_base = NULL;
@@ -1379,6 +1398,17 @@ crprintf_compiled *crprintf_recompile(crprintf_compiled *prev, const char *fmt) 
     while (trunc_idx > 0 && prev->src_map[trunc_idx - 1] == boundary_src)
       trunc_idx--;
     resume_off = boundary_src;
+
+    if (resume_off > 0 && resume_off < new_len) {
+      uint32_t scan = resume_off;
+      while (scan > 0) {
+        char c = fmt[scan];
+        if (c == '<' || c == '{') { resume_off = scan; break; }
+        if (c == '>' || c == '}') break;
+        scan--;
+      }
+      while (trunc_idx > 0 && prev->src_map[trunc_idx - 1] >= resume_off) trunc_idx--;
+    }
   }
 
   prev->code_len = trunc_idx;
@@ -1399,7 +1429,7 @@ crprintf_compiled *crprintf_recompile(crprintf_compiled *prev, const char *fmt) 
   prev->source = malloc(new_len + 1);
   memcpy(prev->source, fmt, new_len + 1);
 
-  var_table_t vars = global_vars;
+  var_scope_t vars = { .base = &global_vars };
   for (size_t i = 0; i + 5 < diverge; i++) {
     if (fmt[i] == '<' && memcmp(fmt + i + 1, "let ", 4) == 0) {
       const char *body = fmt + i + 5;
