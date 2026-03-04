@@ -1219,6 +1219,8 @@ int crsprintf_inner(program_t *prog, char *buf, size_t size, ...) {
 
 int crsprintf_stateful(char *buf, size_t size, crprintf_state *state, const char *fmt, ...) {
   program_t *prog = crprintf_compile(fmt);
+  if (__builtin_expect(crprintf_get_debug(), 0)) crprintf_disasm(prog, stderr);
+  if (__builtin_expect(crprintf_get_debug_hex(), 0)) crprintf_hexdump(prog, stderr);
   va_list ap; va_start(ap, fmt);
   vm_output_t o = crprintf_vm_run(prog, ap, state);
   va_end(ap);
@@ -1237,6 +1239,8 @@ int crsprintf_stateful(char *buf, size_t size, crprintf_state *state, const char
 
 int crfprintf_stateful(FILE *stream, crprintf_state *state, const char *fmt, ...) {
   program_t *prog = crprintf_compile(fmt);
+  if (__builtin_expect(crprintf_get_debug(), 0)) crprintf_disasm(prog, stderr);
+  if (__builtin_expect(crprintf_get_debug_hex(), 0)) crprintf_hexdump(prog, stderr);
   va_list ap; va_start(ap, fmt);
   vm_output_t o = crprintf_vm_run(prog, ap, state);
   va_end(ap);
