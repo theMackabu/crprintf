@@ -1296,6 +1296,8 @@ static crprintf_compiled *compile_tracked(const char *fmt) {
   compile_fragment(p, p->source, &vars);
   emit_op(p, OP_HALT, 0);
   p->compile_base = NULL;
+  if (__builtin_expect(crprintf_get_debug(), 0)) crprintf_disasm(p, stderr);
+  if (__builtin_expect(crprintf_get_debug_hex(), 0)) crprintf_hexdump(p, stderr);
   return p;
 }
 
@@ -1359,6 +1361,8 @@ crprintf_compiled *crprintf_recompile(crprintf_compiled *prev, const char *fmt) 
   compile_fragment(prev, prev->source + resume_off, &vars);
   emit_op(prev, OP_HALT, 0);
   prev->compile_base = NULL;
+  if (__builtin_expect(crprintf_get_debug(), 0)) crprintf_disasm(prev, stderr);
+  if (__builtin_expect(crprintf_get_debug_hex(), 0)) crprintf_hexdump(prev, stderr);
 
   return prev;
 }
