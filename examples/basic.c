@@ -46,6 +46,11 @@ int main(void) {
   // format specifiers
   crprintf("<bold>Number: %d, String: %s</bold>\n", 42, "hello");
   crprintf("<green>Hex: 0x%x, Float: %.2f</green>\n", 255, 3.14159);
+  crprintf("<cyan>Precision: %.*s, Width: '%*s', Dynamic float: %*.*f</cyan>\n",
+    4, "abcdef",
+    6, "hi",
+    7, 2, 3.14159
+  );
   
   // reset
   crprintf("<red>red <reset/>back to normal immediately\n");

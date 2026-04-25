@@ -51,6 +51,25 @@ TEST(format_specifiers) {
   ASSERT_STR_EQ(buf, "float: 3.14");
 }
 
+TEST(dynamic_width_and_precision) {
+  char buf[256];
+  crprintf_set_color(false);
+
+  crsprintf(buf, sizeof(buf), "one: %.*s two: %s", 3, "abcdef", "done");
+  ASSERT_STR_EQ(buf, "one: abc two: done");
+
+  crsprintf(buf, sizeof(buf), "wide: '%*s' next: %d", 5, "hi", 7);
+  ASSERT_STR_EQ(buf, "wide: '   hi' next: 7");
+
+  crsprintf(buf, sizeof(buf), "float: %*.*f next: %s", 6, 2, 3.14159, "done");
+  ASSERT_STR_EQ(buf, "float:   3.14 next: done");
+
+  crsprintf(buf, sizeof(buf), "<red>%.*s</red> %s", 4, "abcdef", "ok");
+  ASSERT_STR_EQ(buf, "abcd ok");
+
+  crprintf_set_color(true);
+}
+
 TEST(color_tags_stripped_in_no_color_mode) {
   char buf[256];
   crprintf_set_color(false);
@@ -334,6 +353,7 @@ int main(void) {
   
   RUN_TEST(basic_string);
   RUN_TEST(format_specifiers);
+  RUN_TEST(dynamic_width_and_precision);
   RUN_TEST(color_tags_stripped_in_no_color_mode);
   RUN_TEST(padding_right);
   RUN_TEST(padding_left);

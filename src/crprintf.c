@@ -740,12 +740,16 @@ typedef enum {
 
 static arg_class_t classify_arg(const char *spec, int len) {
   char conv = spec[len - 1];
-  if (conv == '%' || conv == 'n') return ARG_NONE;
-  if (conv == 's')               return ARG_CSTR;
-  if (conv == 'p')               return ARG_PTR;
-  if (conv == 'f' || conv == 'F' || conv == 'e' || conv == 'E' ||
-      conv == 'g' || conv == 'G' || conv == 'a' || conv == 'A')
-    return ARG_DOUBLE;
+  
+  if (conv == '%') return ARG_NONE;
+  if (conv == 'n') return ARG_PTR;
+  if (conv == 's') return ARG_CSTR;
+  if (conv == 'p') return ARG_PTR;
+  
+  if (
+    conv == 'f' || conv == 'F' || conv == 'e' || conv == 'E' ||
+    conv == 'g' || conv == 'G' || conv == 'a' || conv == 'A'
+  ) return ARG_DOUBLE;
 
   const char *p = spec + 1;
   while (*p == '-' || *p == '+' || *p == ' ' || *p == '#' || *p == '0') p++;
@@ -760,6 +764,39 @@ static arg_class_t classify_arg(const char *spec, int len) {
   if (p[0] == 'j')                return ARG_LLONG;
 
   return ARG_INT;
+}
+
+static void consume_arg(va_list *ap, arg_class_t cls) {
+switch (cls) {
+  case ARG_INT:    (void)va_arg(*ap, int); break;
+  case ARG_LONG:   (void)va_arg(*ap, long); break;
+  case ARG_LLONG:  (void)va_arg(*ap, long long); break;
+  case ARG_SIZE:   (void)va_arg(*ap, size_t); break;
+  case ARG_DOUBLE: (void)va_arg(*ap, double); break;
+  case ARG_CSTR:   (void)va_arg(*ap, const char *); break;
+  case ARG_PTR:    (void)va_arg(*ap, void *); break;
+  case ARG_WINT:   (void)va_arg(*ap, wint_t); break;
+  case ARG_WSTR:   (void)va_arg(*ap, wchar_t *); break;
+  case ARG_NONE:   break;
+}}
+
+static void advance_format_args(const char *spec, va_list *ap) {
+  const char *p = spec + 1;
+  while (*p == '-' || *p == '+' || *p == ' ' || *p == '#' || *p == '0') p++;
+  if (*p == '*') {
+    (void)va_arg(*ap, int);
+    p++;
+  } else while (*p >= '0' && *p <= '9') p++;
+
+  if (*p == '.') {
+    p++;
+    if (*p == '*') {
+      (void)va_arg(*ap, int);
+      p++;
+    } else while (*p >= '0' && *p <= '9') p++;
+  }
+
+  consume_arg(ap, classify_arg(spec, (int)strlen(spec)));
 }
 
 static const char *scan_fmt(crprintf_compiled *p, const char *ptr, const char **lit) {
@@ -1022,7 +1059,6 @@ static vm_output_t crprintf_vm_run_ex(crprintf_compiled *prog, va_list ap, crpri
 
   op_emit_fmt: {
     uint32_t lit_off = ip->operand & 0x0FFFFFFF;
-    arg_class_t cls  = (arg_class_t)(ip->operand >> 28);
     const char *spec = prog->literals + lit_off;
     
     char tmp[256];
@@ -1045,18 +1081,7 @@ static vm_output_t crprintf_vm_run_ex(crprintf_compiled *prog, va_list ap, crpri
     }
     #pragma GCC diagnostic pop
     
-    switch (cls) {
-      case ARG_INT:    (void)va_arg(ap, int); break;
-      case ARG_LONG:   (void)va_arg(ap, long); break;
-      case ARG_LLONG:  (void)va_arg(ap, long long); break;
-      case ARG_SIZE:   (void)va_arg(ap, size_t); break;
-      case ARG_DOUBLE: (void)va_arg(ap, double); break;
-      case ARG_CSTR:   (void)va_arg(ap, const char *); break;
-      case ARG_PTR:    (void)va_arg(ap, void *); break;
-      case ARG_WINT:   (void)va_arg(ap, wint_t); break;
-      case ARG_WSTR:   (void)va_arg(ap, wchar_t *); break;
-      case ARG_NONE:   break;
-    }
+    advance_format_args(spec, &ap);
     NEXT();
   }
 
