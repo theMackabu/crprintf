@@ -766,37 +766,52 @@ static arg_class_t classify_arg(const char *spec, int len) {
   return ARG_INT;
 }
 
-static void consume_arg(va_list *ap, arg_class_t cls) {
-switch (cls) {
-  case ARG_INT:    (void)va_arg(*ap, int); break;
-  case ARG_LONG:   (void)va_arg(*ap, long); break;
-  case ARG_LLONG:  (void)va_arg(*ap, long long); break;
-  case ARG_SIZE:   (void)va_arg(*ap, size_t); break;
-  case ARG_DOUBLE: (void)va_arg(*ap, double); break;
-  case ARG_CSTR:   (void)va_arg(*ap, const char *); break;
-  case ARG_PTR:    (void)va_arg(*ap, void *); break;
-  case ARG_WINT:   (void)va_arg(*ap, wint_t); break;
-  case ARG_WSTR:   (void)va_arg(*ap, wchar_t *); break;
-  case ARG_NONE:   break;
-}}
+#if defined(__x86_64__) && !defined(_WIN32)
+  #define CRP_VA_REF_T  va_list
+  #define CRP_VA_PASS(ap) (ap)
+  #define CRP_VA_DEREF(ap) (ap)
+#else
+  #define CRP_VA_REF_T  va_list *
+  #define CRP_VA_PASS(ap) (&(ap))
+  #define CRP_VA_DEREF(ap) (*(ap))
+#endif
 
-static void advance_format_args(const char *spec, va_list *ap) {
+static inline void advance_format_args(const char *spec, CRP_VA_REF_T ap) {
   const char *p = spec + 1;
-  while (*p == '-' || *p == '+' || *p == ' ' || *p == '#' || *p == '0') p++;
+  
+  while (
+    *p == '-' ||
+    *p == '+' ||
+    *p == ' ' ||
+    *p == '#' ||
+    *p == '0'
+  ) p++;
+  
   if (*p == '*') {
-    (void)va_arg(*ap, int);
+    (void)va_arg(CRP_VA_DEREF(ap), int);
     p++;
   } else while (*p >= '0' && *p <= '9') p++;
 
   if (*p == '.') {
     p++;
     if (*p == '*') {
-      (void)va_arg(*ap, int);
+      (void)va_arg(CRP_VA_DEREF(ap), int);
       p++;
     } else while (*p >= '0' && *p <= '9') p++;
   }
 
-  consume_arg(ap, classify_arg(spec, (int)strlen(spec)));
+  switch (classify_arg(spec, (int)strlen(spec))) {
+    case ARG_INT:    (void)va_arg(CRP_VA_DEREF(ap), int);          break;
+    case ARG_LONG:   (void)va_arg(CRP_VA_DEREF(ap), long);         break;
+    case ARG_LLONG:  (void)va_arg(CRP_VA_DEREF(ap), long long);    break;
+    case ARG_SIZE:   (void)va_arg(CRP_VA_DEREF(ap), size_t);       break;
+    case ARG_DOUBLE: (void)va_arg(CRP_VA_DEREF(ap), double);       break;
+    case ARG_CSTR:   (void)va_arg(CRP_VA_DEREF(ap), const char *); break;
+    case ARG_PTR:    (void)va_arg(CRP_VA_DEREF(ap), void *);       break;
+    case ARG_WINT:   (void)va_arg(CRP_VA_DEREF(ap), wint_t);       break;
+    case ARG_WSTR:   (void)va_arg(CRP_VA_DEREF(ap), wchar_t *);    break;
+    case ARG_NONE:   break;
+  }
 }
 
 static const char *scan_fmt(crprintf_compiled *p, const char *ptr, const char **lit) {
@@ -1081,7 +1096,7 @@ static vm_output_t crprintf_vm_run_ex(crprintf_compiled *prog, va_list ap, crpri
     }
     #pragma GCC diagnostic pop
     
-    advance_format_args(spec, &ap);
+    advance_format_args(spec, CRP_VA_PASS(ap));
     NEXT();
   }
 
